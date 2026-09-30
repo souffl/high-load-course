@@ -6,12 +6,14 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
+import ru.quipy.common.utils.OngoingWindow
+import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
-
+import java.util.concurrent.TimeUnit
 
 // Advice: always treat time as a Duration
 class PaymentExternalSystemAdapterImpl(
@@ -34,28 +36,70 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
+    private val rateLimiter = SlidingWindowRateLimiter(
+        rate = rateLimitPerSec.toLong(),
+        window = Duration.ofSeconds(1),
+    )
+    private val ongoingWindow = OngoingWindow(parallelRequests)
+
     private val client = OkHttpClient.Builder().build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
-        val transactionId = UUID.randomUUID()
+        val processingBudget = requestAverageProcessingTime.toMillis()
+        val acquireBudget = deadline - now() - processingBudget
 
-        // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
-        // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-        paymentESService.update(paymentId) {
-            it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+        if (acquireBudget <= 0) {
+            failWithoutCalling(paymentId, paymentStartedAt, "Not enough time left before deadline.")
+            return
         }
 
-        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
+        if (!ongoingWindow.tryAcquire(Duration.ofMillis(acquireBudget))) {
+            failWithoutCalling(paymentId, paymentStartedAt, "Timeout waiting for parallel slot.")
+            return
+        }
 
+        var submittedTransactionId: UUID? = null
         try {
+            if (now() + processingBudget >= deadline) {
+                failWithoutCalling(paymentId, paymentStartedAt, "Deadline is too close after acquiring slot.")
+                return
+            }
+
+            if (!tickRateLimiterUntil(deadline - processingBudget)) {
+                failWithoutCalling(paymentId, paymentStartedAt, "Timeout waiting for rate limiter.")
+                return
+            }
+
+            val transactionId = UUID.randomUUID()
+            submittedTransactionId = transactionId
+
+            // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
+            // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
+            paymentESService.update(paymentId) {
+                it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+            }
+
+            logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
+
             val request = Request.Builder().run {
                 url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
                 post(emptyBody)
             }.build()
 
-            client.newCall(request).execute().use { response ->
+            val call = client.newCall(request)
+            val callBudget = deadline - now()
+
+            if (callBudget <= 0) {
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = "Deadline exceeded before external call.")
+                }
+                return
+            }
+
+            call.timeout().timeout(callBudget, TimeUnit.MILLISECONDS)
+            call.execute().use { response ->
                 val body = try {
                     mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                 } catch (e: Exception) {
@@ -72,6 +116,12 @@ class PaymentExternalSystemAdapterImpl(
                 }
             }
         } catch (e: Exception) {
+            val transactionId = submittedTransactionId
+            if (transactionId == null) {
+                logger.error("[$accountName] Payment failed before submission: $paymentId", e)
+                return
+            }
+
             when (e) {
                 is SocketTimeoutException -> {
                     logger.error("[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId", e)
@@ -88,6 +138,30 @@ class PaymentExternalSystemAdapterImpl(
                     }
                 }
             }
+        } finally {
+            ongoingWindow.release()
+        }
+    }
+
+    private fun tickRateLimiterUntil(mustAcquireBefore: Long): Boolean {
+        while (now() < mustAcquireBefore) {
+            if (rateLimiter.tick()) {
+                return true
+            }
+            Thread.sleep(10)
+        }
+        return false
+    }
+
+    private fun failWithoutCalling(paymentId: UUID, paymentStartedAt: Long, reason: String) {
+        val transactionId = UUID.randomUUID()
+        logger.warn("[$accountName] Skip payment $paymentId: $reason")
+
+        paymentESService.update(paymentId) {
+            it.logSubmission(false, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+        }
+        paymentESService.update(paymentId) {
+            it.logProcessing(false, now(), transactionId, reason = reason)
         }
     }
 
