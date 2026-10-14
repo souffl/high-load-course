@@ -26,6 +26,9 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+    @Autowired
+    private lateinit var admissionControl: PaymentAdmissionControl
+
     private val paymentExecutor = ThreadPoolExecutor(
         16,
         16,
@@ -37,18 +40,25 @@ class OrderPayer {
     )
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
+        if (!admissionControl.tryAcquire()) {
+            throw PaymentCapacityExceededException()
+        }
         val createdAt = System.currentTimeMillis()
-        paymentExecutor.submit {
-            val createdEvent = paymentESService.create {
-                it.create(
-                    paymentId,
-                    orderId,
-                    amount
-                )
+        try {
+            paymentExecutor.execute {
+                try {
+                    val createdEvent = paymentESService.create {
+                        it.create(paymentId, orderId, amount)
+                    }
+                    logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
+                    paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+                } finally {
+                    admissionControl.release()
+                }
             }
-            logger.trace("Payment ${createdEvent.paymentId} for order $orderId created.")
-
-            paymentService.submitPaymentRequest(paymentId, amount, createdAt, deadline)
+        } catch (e: RuntimeException) {
+            admissionControl.release()
+            throw e
         }
         return createdAt
     }

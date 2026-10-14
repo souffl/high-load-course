@@ -19,6 +19,8 @@ interface PaymentService {
 interface PaymentExternalSystemAdapter {
     fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
 
+    fun parallelism(): Int
+
     fun name(): String
 
     fun price(): Int
