@@ -110,6 +110,8 @@ class PaymentExternalSystemAdapterImpl(
 
     override fun parallelism() = parallelRequests
 
+    override fun averageProcessingTime() = properties.averageProcessingTime
+
     override fun isEnabled() = properties.enabled
 
     override fun name() = properties.accountName
