@@ -6,7 +6,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
-import ru.quipy.common.utils.OngoingWindow
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -32,7 +31,6 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
@@ -40,37 +38,23 @@ class PaymentExternalSystemAdapterImpl(
         rate = rateLimitPerSec.toLong(),
         window = Duration.ofSeconds(1),
     )
-    private val ongoingWindow = OngoingWindow(parallelRequests)
-
     private val client = OkHttpClient.Builder().build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
-        rateLimiter.tickBlocking()
-
-        val processingBudget = requestAverageProcessingTime.toMillis()
-        val acquireBudget = deadline - now() - processingBudget
-
-        if (acquireBudget <= 0) {
-            return
-        }
-
-        if (!ongoingWindow.tryAcquire(Duration.ofMillis(acquireBudget))) {
-            return
-        }
-
         val transactionId = UUID.randomUUID()
 
-        // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
-        // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
-        paymentESService.update(paymentId) {
-            it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
-        }
-
-        logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
-
         try {
+            rateLimiter.tickBlocking()
+
+            // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
+            // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
+            paymentESService.update(paymentId) {
+                it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
+            }
+            logger.info("[$accountName] Submit: $paymentId , txId: $transactionId")
+
             val request = Request.Builder().run {
                 url("http://$paymentProviderHostPort/external/process?serviceName=$serviceName&token=$token&accountName=$accountName&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
                 post(emptyBody)
@@ -80,6 +64,9 @@ class PaymentExternalSystemAdapterImpl(
             val callBudget = deadline - now()
 
             if (callBudget <= 0) {
+                paymentESService.update(paymentId) {
+                    it.logProcessing(false, now(), transactionId, reason = "call budget <= 0")
+                }
                 return
             }
 
@@ -116,12 +103,12 @@ class PaymentExternalSystemAdapterImpl(
                     }
                 }
             }
-        } finally {
-            ongoingWindow.release()
         }
     }
 
     override fun price() = properties.price
+
+    override fun parallelism() = parallelRequests
 
     override fun isEnabled() = properties.enabled
 

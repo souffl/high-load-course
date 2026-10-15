@@ -29,12 +29,214 @@
   "liveNow": true,
   "panels": [
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "оплат за минуту",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 101,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "(sum(increase(events_total{job=\"bombardier-docker-network-job\",type=\"I_STARTED_PAYMENT\"}[1m])) or vector(0)) - (sum(increase(events_total{job=\"bombardier-docker-network-job\",type=~\"I_PAYMENT_SUCCESS|E_PAYMENT_TIMEOUT_EXCEEDED\"}[1m])) or vector(0))",
+          "legendFormat": "Изменение числа незавершённых оплат",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Прирост незавершённых оплат за минуту",
+      "type": "timeseries",
+      "description": "Начатые оплаты минус успешные завершения и таймауты за скользящую минуту. Включает ожидание и обработку. events_total общий для всех сервисов Bombardier; применять при одном тестируемом сервисе. HTTP 429 не создаёт I_STARTED_PAYMENT."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "оплат за минуту",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 102,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(http_external_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\",method=\"payOrder\",result=\"CODE-429\"}[1m])) or vector(0)",
+          "legendFormat": "Отклонено до отправки провайдеру",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Отказы HTTP 429 за минуту",
+      "type": "timeseries",
+      "description": "Попытки оплаты, отклонённые магазином до обращения к платёжному провайдеру. Bombardier повторяет подачу таких кейсов; отказы не означают неуспешную оплату."
+    },
+    {
       "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 0
+        "y": 8
       },
       "id": 27,
       "panels": [
@@ -103,7 +305,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 1
+            "y": 9
           },
           "id": 29,
           "options": {
@@ -126,7 +328,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(rate(payment_finished_total{service=~\"$service\"}[30s])) by (service, outcome, failReason)",
+              "expr": "sum(rate(payment_finished_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[30s])) by (service, outcome, failReason)",
               "hide": false,
               "instant": false,
               "legendFormat": "{{outcome}} - {{failReason}}",
@@ -201,7 +403,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 1
+            "y": 9
           },
           "id": 26,
           "options": {
@@ -225,7 +427,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum by (type) (rate(events_total{}[30s]))",
+              "expr": "sum by (type) (rate(events_total{job=\"bombardier-docker-network-job\"}[30s]))",
               "interval": "",
               "legendFormat": "{{type}}",
               "range": true,
@@ -300,7 +502,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 265
+            "y": 273
           },
           "id": 28,
           "options": {
@@ -323,7 +525,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(increase(payments_amount_total{service=~\"$service\"}[1m])) by (service) / (sum(increase(payments_amount_total{service=~\"$service\"}[1m])) by (service) + sum(increase(external_amount_total{service=~\"$service\"}[1m])) by (service))",
+              "expr": "sum(increase(payments_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service) / (sum(increase(payments_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service) + sum(increase(external_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service))",
               "hide": false,
               "instant": false,
               "legendFormat": "income - {{service}}",
@@ -336,7 +538,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(increase(external_amount_total{service=~\"$service\"}[1m])) by (service) / (sum(increase(payments_amount_total{service=~\"$service\"}[1m])) by (service) + sum(increase(external_amount_total{service=~\"$service\"}[1m])) by (service))",
+              "expr": "sum(increase(external_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service) / (sum(increase(payments_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service) + sum(increase(external_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service))",
               "hide": false,
               "instant": false,
               "legendFormat": "expenses - {{service}} ",
@@ -379,7 +581,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 265
+            "y": 273
           },
           "id": 36,
           "options": {
@@ -407,7 +609,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(increase(payments_amount_total{service=~\"$service\"}[$__range])) by (service) / (sum(increase(payments_amount_total{service=~\"$service\"}[$__range])) by (service) + sum(increase(external_amount_total{service=~\"$service\"}[$__range])) by (service))",
+              "expr": "sum(increase(payments_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service) / (sum(increase(payments_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service) + sum(increase(external_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service))",
               "hide": false,
               "instant": false,
               "legendFormat": "income - {{service}}",
@@ -420,7 +622,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(increase(external_amount_total{service=~\"$service\"}[$__range])) by (service) / (sum(increase(payments_amount_total{service=~\"$service\"}[$__range])) by (service) + sum(increase(external_amount_total{service=~\"$service\"}[$__range])) by (service))",
+              "expr": "sum(increase(external_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service) / (sum(increase(payments_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service) + sum(increase(external_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service))",
               "hide": false,
               "instant": false,
               "legendFormat": "expenses - {{service}} ",
@@ -496,7 +698,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 273
+            "y": 281
           },
           "id": 37,
           "options": {
@@ -521,7 +723,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(increase(payments_amount_total{service=~\"$service\"}[1m])) by (service)",
+              "expr": "sum(increase(payments_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service)",
               "hide": false,
               "instant": false,
               "legendFormat": "income - {{service}}",
@@ -534,7 +736,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(increase(external_amount_total{service=~\"$service\"}[1m])) by (service, accountName) ",
+              "expr": "sum(increase(external_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service, accountName) ",
               "hide": false,
               "instant": false,
               "legendFormat": "expenses - {{service}} - {{accountName}}",
@@ -577,7 +779,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 273
+            "y": 281
           },
           "id": 31,
           "options": {
@@ -605,7 +807,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(increase(payments_amount_total{service=~\"$service\"}[$__range])) by (service)",
+              "expr": "sum(increase(payments_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service)",
               "hide": false,
               "instant": false,
               "legendFormat": "income - {{service}}",
@@ -618,7 +820,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "sum(increase(external_amount_total{service=~\"$service\"}[$__range])) by (service, accountName) ",
+              "expr": "sum(increase(external_amount_total{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service, accountName) ",
               "hide": false,
               "instant": false,
               "legendFormat": "expenses - {{service}} - {{accountName}}",
@@ -639,7 +841,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 1
+        "y": 9
       },
       "id": 10,
       "panels": [
@@ -701,7 +903,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 2
+            "y": 10
           },
           "id": 2,
           "options": {
@@ -730,7 +932,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(increase(test_duration_count{service=~\"$service\"}[$__range])) by (service, testOutcome)",
+              "expr": "sum(increase(test_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\"}[$__range])) by (service, testOutcome)",
               "interval": "",
               "legendFormat": "{{service}} - {{testOutcome}}",
               "range": true,
@@ -840,7 +1042,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 2
+            "y": 10
           },
           "id": 13,
           "options": {
@@ -866,7 +1068,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "(sum by(service)(increase(test_duration_count{service=~\"$service\", testOutcome=~\"SUCCESS\"}[1m]))) / (sum by(service) (increase(test_duration_count{service=~\"$service\", testOutcome=~\".*\"}[1m])))",
+              "expr": "(sum by(service)(increase(test_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\", testOutcome=~\"SUCCESS\"}[1m]))) / (sum by(service) (increase(test_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\", testOutcome=~\".*\"}[1m])))",
               "interval": "",
               "legendFormat": "{{service}} - success",
               "range": true,
@@ -913,7 +1115,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "normal"
+                  "mode": "none"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -941,7 +1143,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 226
+            "y": 234
           },
           "id": 25,
           "options": {
@@ -965,7 +1167,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(rate(test_duration_sum{service=~\"$service\"}[1m])) by (service, testOutcome) / sum by (service, testOutcome) (rate(test_duration_count{service=~\"$service\"}[1m]))",
+              "expr": "sum(rate(test_duration_sum{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])) by (service, testOutcome) / sum by (service, testOutcome) (rate(test_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m]))",
               "interval": "",
               "legendFormat": "{{service}} - {{testOutcome}}",
               "range": true,
@@ -985,7 +1187,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 2
+        "y": 10
       },
       "id": 12,
       "panels": [
@@ -1087,7 +1289,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 3
+            "y": 11
           },
           "id": 7,
           "options": {
@@ -1113,7 +1315,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(increase(stage_duration_ok_count{service=~\"$service\", result=\"success\"}[1m])) by (stage)",
+              "expr": "sum(increase(stage_duration_ok_count{job=\"bombardier-docker-network-job\",service=~\"$service\", result=\"success\"}[1m])) by (stage)",
               "interval": "",
               "legendFormat": "{{stage}}",
               "range": true,
@@ -1222,7 +1424,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 3
+            "y": 11
           },
           "id": 8,
           "options": {
@@ -1248,7 +1450,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(increase(stage_duration_ok_count{service=~\"$service\", result=\"failed\"}[1m])) by (stage)",
+              "expr": "sum(increase(stage_duration_ok_count{job=\"bombardier-docker-network-job\",service=~\"$service\", result=\"failed\"}[1m])) by (stage)",
               "interval": "",
               "legendFormat": "{{stage}}",
               "range": true,
@@ -1320,7 +1522,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 123
+            "y": 131
           },
           "id": 30,
           "options": {
@@ -1346,7 +1548,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "rate(stage_duration_ok_sum{service=~\"$service\", result=\"success\"}[1m]) / rate(stage_duration_ok_count{service=~\"$service\", result=\"success\"}[1m])",
+              "expr": "rate(stage_duration_ok_sum{job=\"bombardier-docker-network-job\",service=~\"$service\", result=\"success\"}[1m]) / rate(stage_duration_ok_count{job=\"bombardier-docker-network-job\",service=~\"$service\", result=\"success\"}[1m])",
               "interval": "",
               "legendFormat": "{{stage}}",
               "range": true,
@@ -1378,7 +1580,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 3
+        "y": 11
       },
       "id": 17,
       "panels": [
@@ -1481,7 +1683,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 4
+            "y": 12
           },
           "id": 3,
           "options": {
@@ -1507,7 +1709,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(rate(http_external_duration_count{service=~\"$service\"}[30s])) by (method)",
+              "expr": "sum(rate(http_external_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\"}[30s])) by (method)",
               "hide": false,
               "interval": "",
               "legendFormat": "{{method}}",
@@ -1617,7 +1819,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 4
+            "y": 12
           },
           "id": 14,
           "options": {
@@ -1645,7 +1847,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "rate(http_external_duration_sum{service=~\"$service\"}[1m]) / rate(http_external_duration_count{service=~\"$service\"}[1m])",
+              "expr": "rate(http_external_duration_sum{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m]) / rate(http_external_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])",
               "hide": false,
               "interval": "",
               "legendFormat": "{{method}} - {{result}}",
@@ -1696,7 +1898,7 @@
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
-                  "mode": "normal"
+                  "mode": "none"
                 },
                 "thresholdsStyle": {
                   "mode": "off"
@@ -1755,7 +1957,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 100
+            "y": 108
           },
           "id": 32,
           "options": {
@@ -1783,7 +1985,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "rate(external_sys_duration_count{service=~\"$service\"}[30s])",
+              "expr": "rate(external_sys_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\"}[30s])",
               "hide": false,
               "interval": "",
               "legendFormat": "{{accountName}} - {{outcome}}",
@@ -1893,7 +2095,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 100
+            "y": 108
           },
           "id": 34,
           "options": {
@@ -1921,7 +2123,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "rate(external_sys_duration_sum{service=~\"$service\"}[1m]) / rate(external_sys_duration_count{service=~\"$service\"}[1m])",
+              "expr": "rate(external_sys_duration_sum{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m]) / rate(external_sys_duration_count{job=\"bombardier-docker-network-job\",service=~\"$service\"}[1m])",
               "hide": false,
               "interval": "",
               "legendFormat": "{{accountName}} - {{outcome}}",
@@ -2055,7 +2257,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 108
+            "y": 116
           },
           "id": 43,
           "options": {
@@ -2082,7 +2284,7 @@
                 "uid": "PBFA97CFB590B2093"
               },
               "editorMode": "code",
-              "expr": "rate(http_request_latent_sum{service=~\"$service\"}[15s]) / rate(http_request_latent_count{service=~\"$service\"}[15s])",
+              "expr": "rate(http_request_latent_sum{job=\"bombardier-docker-network-job\",service=~\"$service\"}[15s]) / rate(http_request_latent_count{job=\"bombardier-docker-network-job\",service=~\"$service\"}[15s])",
               "hide": false,
               "instant": false,
               "legendFormat": "{{method}} - {{result}}",
@@ -2103,7 +2305,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 4
+        "y": 12
       },
       "id": 21,
       "panels": [
@@ -2171,7 +2373,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 5
+            "y": 13
           },
           "id": 19,
           "options": {
@@ -2269,7 +2471,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 5
+            "y": 13
           },
           "id": 22,
           "options": {
@@ -2367,7 +2569,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 85
+            "y": 93
           },
           "id": 100,
           "options": {
@@ -2411,7 +2613,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 13
       },
       "id": 38,
       "panels": [
@@ -2476,7 +2678,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 6
+            "y": 14
           },
           "id": 40,
           "options": {
@@ -2570,7 +2772,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 6
+            "y": 14
           },
           "id": 39,
           "options": {
@@ -2669,7 +2871,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 38
+            "y": 46
           },
           "id": 95,
           "options": {
@@ -2779,7 +2981,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 38
+            "y": 46
           },
           "id": 42,
           "options": {
@@ -2873,7 +3075,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 46
+            "y": 54
           },
           "id": 41,
           "options": {
@@ -2916,7 +3118,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 6
+        "y": 14
       },
       "id": 97,
       "panels": [
@@ -2984,7 +3186,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 7
+            "y": 15
           },
           "id": 98,
           "maxDataPoints": 100,
@@ -3086,7 +3288,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 7
+            "y": 15
           },
           "id": 99,
           "maxDataPoints": 100,
@@ -3190,7 +3392,7 @@
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 15
+            "y": 23
           },
           "id": 24,
           "options": {
@@ -3329,7 +3531,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 23
+            "y": 31
           },
           "id": 4,
           "options": {
@@ -3429,7 +3631,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 23
+            "y": 31
           },
           "id": 96,
           "options": {
@@ -3514,6 +3716,6 @@
   "timezone": "",
   "title": "Services statistic",
   "uid": "KVr-Vmpnz",
-  "version": 4,
+  "version": 5,
   "weekStart": ""
 }
