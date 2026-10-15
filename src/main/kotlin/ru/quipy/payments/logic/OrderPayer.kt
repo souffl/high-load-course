@@ -30,9 +30,11 @@ class OrderPayer(paymentAccounts: List<PaymentExternalSystemAdapter>) {
     @Autowired
     private lateinit var paymentService: PaymentService
 
-    private val capacity = paymentAccounts.minOfOrNull { it.parallelism() }
-        ?: error("At least one payment account is required.")
-    private val ongoingWindow = OngoingWindow(capacity.also { require(it > 0) })
+    private val capacity = paymentAccounts.minOf { it.parallelism() }
+    private val ongoingWindow = OngoingWindow(capacity)
+    private val processingBudget = Duration.ofMillis(
+        paymentAccounts.sumOf { it.averageProcessingTime().toMillis() }
+    ).plusSeconds(1)
 
     private val paymentExecutor = ThreadPoolExecutor(
         16,
@@ -45,11 +47,15 @@ class OrderPayer(paymentAccounts: List<PaymentExternalSystemAdapter>) {
     )
 
     fun processPayment(orderId: UUID, amount: Int, paymentId: UUID, deadline: Long): Long {
-        if (!ongoingWindow.tryAcquire(Duration.ZERO)) {
-            throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Payment capacity is exhausted. Retry later.")
-        }
         val createdAt = System.currentTimeMillis()
+        val waitMillis = deadline - createdAt - processingBudget.toMillis()
+        if (waitMillis <= 0 || !ongoingWindow.tryAcquire(Duration.ofMillis(waitMillis))) {
+            throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Not enough time to accept payment before deadline.")
+        }
         try {
+            if (deadline - System.currentTimeMillis() <= processingBudget.toMillis()) {
+                throw ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Not enough time left to process payment.")
+            }
             paymentExecutor.execute {
                 try {
                     val createdEvent = paymentESService.create {
