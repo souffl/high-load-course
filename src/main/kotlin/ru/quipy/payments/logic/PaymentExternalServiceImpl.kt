@@ -6,7 +6,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
-import ru.quipy.common.utils.OngoingWindow
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -32,7 +31,6 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
@@ -40,23 +38,10 @@ class PaymentExternalSystemAdapterImpl(
         rate = rateLimitPerSec.toLong(),
         window = Duration.ofSeconds(1),
     )
-    private val ongoingWindow = OngoingWindow(parallelRequests)
-
     private val client = OkHttpClient.Builder().build()
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
-
-        val processingBudget = requestAverageProcessingTime.toMillis()
-        val acquireBudget = deadline - now() - processingBudget
-
-        if (acquireBudget <= 0) {
-            return
-        }
-
-        if (!ongoingWindow.tryAcquire(Duration.ofMillis(acquireBudget))) {
-            return
-        }
 
         val transactionId = UUID.randomUUID()
 
@@ -118,8 +103,6 @@ class PaymentExternalSystemAdapterImpl(
                     }
                 }
             }
-        } finally {
-            ongoingWindow.release()
         }
     }
 

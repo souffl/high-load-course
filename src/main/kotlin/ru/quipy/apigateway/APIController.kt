@@ -3,11 +3,9 @@ package ru.quipy.apigateway
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.*
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
-import ru.quipy.payments.logic.PaymentCapacityExceededException
 import java.util.*
 
 @RestController
@@ -66,11 +64,6 @@ class APIController {
         orderRepository.save(order.copy(status = OrderStatus.PAYMENT_IN_PROGRESS))
         return PaymentSubmissionDto(createdAt, paymentId)
     }
-
-    @ExceptionHandler(PaymentCapacityExceededException::class)
-    @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
-    fun paymentCapacityExceeded(exception: PaymentCapacityExceededException): Map<String, String> =
-        mapOf("message" to exception.message.orEmpty())
 
     class PaymentSubmissionDto(
         val timestamp: Long,
