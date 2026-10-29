@@ -74,11 +74,10 @@ class PaymentExternalSystemAdapterImpl(
 
             call.timeout().timeout(callBudget, TimeUnit.MILLISECONDS)
             call.execute().use { response ->
-                val responseText = response.body?.string()
                 val body = try {
-                    mapper.readValue(responseText, ExternalSysResponse::class.java)
+                    mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                 } catch (e: Exception) {
-                    logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: $responseText")
+                    logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
                     ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
                 }
 
