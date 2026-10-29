@@ -1,6 +1,7 @@
 package ru.quipy.apigateway
 
 import jakarta.annotation.PreDestroy
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import ru.quipy.common.utils.NamedThreadFactory
 import ru.quipy.payments.logic.PaymentExternalSystemAdapter
@@ -10,14 +11,17 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 @Component
-class PaymentRequestQueue(paymentAccounts: List<PaymentExternalSystemAdapter>) {
+class PaymentRequestQueue(
+    paymentAccounts: List<PaymentExternalSystemAdapter>,
+    @Value("\${payment.queue.processing-budget-millis:2100}")
+    private val processingBudgetMillis: Long,
+    @Value("\${payment.deadline-safety-margin-millis:200}")
+    private val safetyMarginMillis: Long,
+) {
     private val averageProcessingMillis = paymentAccounts.sumOf { it.averageProcessingTime().toMillis() }
-    // Reserve 25% per processing operation and another 20% before the deadline.
-    private val processingBudgetMillis = averageProcessingMillis + averageProcessingMillis / 4
-    private val safetyMarginMillis = maxOf(1L, averageProcessingMillis / 5)
     private val rateLimitPerSecond = paymentAccounts.minOf { it.rateLimitPerSecond() }
     private val dispatchIntervalNanos = (TimeUnit.SECONDS.toNanos(1) + rateLimitPerSecond - 1) / rateLimitPerSecond
-    // Rate * processing time bounds useful concurrency; do not create 10,000 worker threads.
+
     private val capacity = minOf(
         paymentAccounts.minOf { it.parallelism() },
         maxOf(1L, (rateLimitPerSecond.toLong() * processingBudgetMillis + 999) / 1_000).toInt()
@@ -57,7 +61,6 @@ class PaymentRequestQueue(paymentAccounts: List<PaymentExternalSystemAdapter>) {
                 0L
             } else {
                 val elapsed = nowNanos - startedAt
-                // An overdue request still occupies its slot; do not predict it as already free.
                 maxOf(processingNanos - elapsed, TimeUnit.MILLISECONDS.toNanos(averageProcessingMillis))
             }
         }
@@ -75,7 +78,6 @@ class PaymentRequestQueue(paymentAccounts: List<PaymentExternalSystemAdapter>) {
         return TimeUnit.NANOSECONDS.toMillis(finishIn) + safetyMarginMillis <= deadline - now
     }
 
-    // Called under lock: both admission and execution use FIFO order and the same sending interval.
     private fun scheduleDispatch() {
         if (scheduledDispatch != null || waiting.isEmpty() || slots.none { it.startedAtNanos == null }) return
         val delay = maxOf(0L, nextDispatchAtNanos - System.nanoTime())
