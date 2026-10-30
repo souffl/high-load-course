@@ -48,8 +48,6 @@ class PaymentExternalSystemAdapterImpl(
         val transactionId = UUID.randomUUID()
 
         try {
-            rateLimiter.tickBlocking()
-
             // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
             // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
             paymentESService.update(paymentId) {
@@ -63,6 +61,8 @@ class PaymentExternalSystemAdapterImpl(
             }.build()
 
             val call = client.newCall(request)
+            // Limit actual HTTP starts: a database write after acquiring a permit can bunch requests.
+            rateLimiter.tickBlocking()
             val callBudget = deadline - now() - deadlineSafetyMarginMillis
 
             if (callBudget <= 0) {

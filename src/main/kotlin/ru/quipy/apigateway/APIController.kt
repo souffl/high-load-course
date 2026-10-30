@@ -71,7 +71,7 @@ class APIController {
             orderPayer.processPayment(orderId, order.price, paymentId, deadline, receivedAt)
         } ?: throw ResponseStatusException(
             HttpStatus.TOO_MANY_REQUESTS,
-            "Payment cannot finish before deadline with the current queue."
+            "Payment cannot be accepted with the current limits and deadline."
         )
         return PaymentSubmissionDto(createdAt, paymentId)
     }
