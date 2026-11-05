@@ -9,9 +9,10 @@ import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
-import java.net.SocketTimeoutException
+import java.io.InterruptedIOException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.TimeUnit
 
 
 // Advice: always treat time as a Duration
@@ -20,6 +21,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
+    private val deadlineSafetyMarginMillis: Long = 200,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -46,8 +48,6 @@ class PaymentExternalSystemAdapterImpl(
         val transactionId = UUID.randomUUID()
 
         try {
-            rateLimiter.tickBlocking()
-
             // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
             // Это требуется сделать ВО ВСЕХ СЛУЧАЯХ, поскольку эта информация используется сервисом тестирования.
             paymentESService.update(paymentId) {
@@ -61,7 +61,9 @@ class PaymentExternalSystemAdapterImpl(
             }.build()
 
             val call = client.newCall(request)
-            val callBudget = deadline - now()
+            // Limit actual HTTP starts: a database write after acquiring a permit can bunch requests.
+            rateLimiter.tickBlocking()
+            val callBudget = deadline - now() - deadlineSafetyMarginMillis
 
             if (callBudget <= 0) {
                 paymentESService.update(paymentId) {
@@ -70,6 +72,7 @@ class PaymentExternalSystemAdapterImpl(
                 return
             }
 
+            call.timeout().timeout(callBudget, TimeUnit.MILLISECONDS)
             call.execute().use { response ->
                 val body = try {
                     mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
@@ -88,7 +91,7 @@ class PaymentExternalSystemAdapterImpl(
             }
         } catch (e: Exception) {
             when (e) {
-                is SocketTimeoutException -> {
+                is InterruptedIOException -> {
                     logger.error("[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId", e)
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
@@ -109,6 +112,8 @@ class PaymentExternalSystemAdapterImpl(
     override fun price() = properties.price
 
     override fun parallelism() = parallelRequests
+
+    override fun rateLimitPerSecond() = rateLimitPerSec
 
     override fun averageProcessingTime() = properties.averageProcessingTime
 
