@@ -30,17 +30,13 @@ class PaymentRequestQueue(
         require(paymentAccounts.all { it.rateLimitPerSecond() > 0 && it.parallelism() > 0 })
     }
 
-    private val averageProcessingMillis = paymentAccounts.sumOf { it.averageProcessingTime().toMillis() }
     private val rateLimitPerSecond = paymentAccounts.minOf { it.rateLimitPerSecond() }
-    // Size workers using average service time; use the larger processing budget for admission.
-    private val workerCount = minOf(
-        paymentAccounts.minOf { it.parallelism() },
-        maxOf(1L, (rateLimitPerSecond.toLong() * averageProcessingMillis + 999) / 1_000).toInt()
-    )
-    private val estimatedThroughput = maxOf(
-        1L, minOf(rateLimitPerSecond.toLong(), workerCount * 1_000L / processingBudgetMillis)
-    )
-    private val queueCapacity = maxOf(1L, estimatedThroughput * maxWaitMillis / 1_000).toInt()
+    private val workerCount = paymentAccounts.minOf { it.parallelism() }
+    // This queue holds requests waiting for an ingress rate permit. Its capacity must
+    // match the account start rate, not the processing budget used by the deadline.
+    private val queueCapacity = maxOf(
+        1L, rateLimitPerSecond.toLong() * maxWaitMillis / 1_000
+    ).toInt()
     // Reserve spaced starts using the ready-made limiter, including short bursts within the wait budget.
     private val admissionLimiter = RateLimiter.of(
         "payment-admission",
@@ -59,26 +55,18 @@ class PaymentRequestQueue(
 
     init {
         LoggerFactory.getLogger(PaymentRequestQueue::class.java).info(
-            "Payment executor: workers={}, queueCapacity={}, processingBudgetMillis={}, maxWaitMillis={}",
-            workerCount, queueCapacity, processingBudgetMillis, maxWaitMillis
+            "Payment executor: workers={}, queueCapacity={}, rateLimitPerSecond={}, processingBudgetMillis={}, maxWaitMillis={}",
+            workerCount, queueCapacity, rateLimitPerSecond, processingBudgetMillis, maxWaitMillis
         )
     }
 
     fun submit(deadline: Long, action: (Long) -> Unit): Long? = synchronized(executor) {
         val receivedAt = System.currentTimeMillis()
-        if (executor.isShutdown || (executor.poolSize >= workerCount && executor.queue.remainingCapacity() == 0)) {
+        if (executor.isShutdown) return@synchronized null
+        if (executor.poolSize >= workerCount && executor.queue.remainingCapacity() == 0) {
             return@synchronized null
         }
-        // Executor statistics give a conservative queue-length estimate, not a deadline guarantee.
-        val tasksAhead = executor.queue.size + if (executor.activeCount >= workerCount) 1 else 0
-        val estimatedWaitMillis = (tasksAhead * 1_000L + estimatedThroughput - 1) / estimatedThroughput
-        if (estimatedWaitMillis > maxWaitMillis ||
-            estimatedWaitMillis + processingBudgetMillis + safetyMarginMillis > deadline - receivedAt
-        ) return@synchronized null
-        val remainingWaitMillis = minOf(maxWaitMillis, deadline - System.currentTimeMillis() - processingBudgetMillis - safetyMarginMillis)
-        if (remainingWaitMillis < 0) return@synchronized null
-        // All reservations and per-request timeout changes are serialized by this admission lock.
-        admissionLimiter.changeTimeoutDuration(Duration.ofMillis(remainingWaitMillis))
+        admissionLimiter.changeTimeoutDuration(Duration.ofMillis(maxWaitMillis))
         val permitWaitNanos = admissionLimiter.reservePermission()
         if (permitWaitNanos < 0) return@synchronized null
         val startAtNanos = System.nanoTime() + permitWaitNanos
