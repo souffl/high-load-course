@@ -3,9 +3,10 @@ package ru.quipy.apigateway
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
-import org.springframework.web.server.ResponseStatusException
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
 import java.util.*
@@ -60,20 +61,24 @@ class APIController {
     }
 
     @PostMapping("/orders/{orderId}/payment")
-    fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): PaymentSubmissionDto {
+    fun payOrder(@PathVariable orderId: UUID, @RequestParam deadline: Long): ResponseEntity<PaymentSubmissionDto> {
         val paymentId = UUID.randomUUID()
         val order = orderRepository.findById(orderId)?.let {
             orderRepository.save(it.copy(status = OrderStatus.PAYMENT_IN_PROGRESS))
             it
         } ?: throw IllegalArgumentException("No such order $orderId")
 
-        val createdAt = paymentRequestQueue.submit(deadline) { receivedAt ->
+        val admission = paymentRequestQueue.submit(deadline) { receivedAt ->
             orderPayer.processPayment(orderId, order.price, paymentId, deadline, receivedAt)
-        } ?: throw ResponseStatusException(
-            HttpStatus.TOO_MANY_REQUESTS,
-            "Payment cannot be accepted with the current limits and deadline."
-        )
-        return PaymentSubmissionDto(createdAt, paymentId)
+        }
+        return when (admission) {
+            is PaymentRequestQueue.Admission.Accepted ->
+                ResponseEntity.ok(PaymentSubmissionDto(admission.receivedAt, paymentId))
+            is PaymentRequestQueue.Admission.Rejected ->
+                ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .header(HttpHeaders.RETRY_AFTER, admission.retryAt.toString())
+                    .build()
+        }
     }
 
     class PaymentSubmissionDto(
