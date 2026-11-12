@@ -24,7 +24,7 @@ class PaymentRequestQueue(
     private val deadlineAdmissionEnabled: Boolean,
     @Value("\${payment.queue.deadline-admission-processing-budget-millis:0}")
     configuredAdmissionProcessingBudgetMillis: Long,
-    @Value("\${payment.deadline-safety-margin-millis:200}")
+    @Value("\${payment.deadline-safety-margin-millis:300}")
     private val deadlineSafetyMarginMillis: Long,
 ) {
     init {
@@ -63,19 +63,22 @@ class PaymentRequestQueue(
         val receivedAt = System.currentTimeMillis()
         if (!accepting.get()) return rejected(receivedAt, deadline)
 
-        while (true) {
-            val startsAhead = pendingStarts.get()
-            if (!canStartBeforeDeadline(receivedAt, deadline, startsAhead)) {
-                return rejected(receivedAt, deadline)
-            }
-            if (pendingStarts.compareAndSet(startsAhead, startsAhead + 1)) break
-        }
-
-        if (!waiting.offer(PendingPayment(receivedAt, action))) {
-            pendingStarts.decrementAndGet()
+        if (!enqueue(receivedAt, deadline, action)) {
             return rejected(receivedAt, deadline)
         }
         return Admission.Accepted(receivedAt)
+    }
+
+    private fun enqueue(receivedAt: Long, deadline: Long, action: (Long) -> Unit): Boolean {
+        while (true) {
+            val startsAhead = pendingStarts.get()
+            if (!canStartBeforeDeadline(receivedAt, deadline, startsAhead)) return false
+            if (pendingStarts.compareAndSet(startsAhead, startsAhead + 1)) break
+        }
+
+        if (waiting.offer(PendingPayment(receivedAt, action))) return true
+        pendingStarts.decrementAndGet()
+        return false
     }
 
     private fun rejected(receivedAt: Long, deadline: Long): Admission.Rejected {
