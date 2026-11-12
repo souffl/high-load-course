@@ -39,6 +39,15 @@ class TokenBucketRateLimiter(
         }
     }
 
+    fun estimateDelayNanos(permitsAhead: Int): Long = synchronized(lock) {
+        require(permitsAhead > 0)
+        refill(System.nanoTime())
+        maxOf(
+            0L,
+            ((permitsAhead - tokens).coerceAtLeast(0.0) * TimeUnit.SECONDS.toNanos(1) / ratePerSecond).toLong(),
+        )
+    }
+
     private fun refill(nowNanos: Long) {
         val elapsedNanos = nowNanos - lastRefillAtNanos
         if (elapsedNanos <= 0) return
