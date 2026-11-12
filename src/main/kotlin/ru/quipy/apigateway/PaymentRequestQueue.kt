@@ -48,7 +48,12 @@ class PaymentRequestQueue(
     private val workerSlots = Semaphore(workerCount)
     private val executor = Executors.newFixedThreadPool(workerCount, NamedThreadFactory("payment-request-executor"))
     private val dispatcher = Executors.newSingleThreadExecutor(NamedThreadFactory("payment-request-dispatcher"))
-    private val tokenBucket = TokenBucketRateLimiter(dispatchRatePerSecond, tokenCapacity)
+    private val tokenBucket = TokenBucketRateLimiter(
+        rate = dispatchRatePerSecond,
+        bucketMaxCapacity = tokenCapacity,
+        window = 1,
+        timeUnit = TimeUnit.SECONDS,
+    )
 
     init {
         logger.info(
@@ -88,9 +93,7 @@ class PaymentRequestQueue(
 
     private fun canStartBeforeDeadline(receivedAt: Long, deadline: Long, startsAhead: Int): Boolean {
         if (!deadlineAdmissionEnabled) return true
-        val queuedStartDelayMillis = TimeUnit.NANOSECONDS.toMillis(
-            tokenBucket.estimateDelayNanos(startsAhead + 1) + TimeUnit.MILLISECONDS.toNanos(1) - 1
-        )
+        val queuedStartDelayMillis = tokenBucket.estimateDelayMillis(startsAhead + 1)
         return queuedStartDelayMillis + processingBudgetMillis + deadlineSafetyMarginMillis < deadline - receivedAt
     }
 
@@ -100,7 +103,9 @@ class PaymentRequestQueue(
                 val payment = waiting.take()
                 workerSlots.acquire()
                 try {
-                    tokenBucket.acquire()
+                    while (!tokenBucket.tick()) {
+                        TimeUnit.MILLISECONDS.sleep(maxOf(1L, tokenBucket.estimateDelayMillis(1)))
+                    }
                     pendingStarts.decrementAndGet()
                     executor.execute {
                         try {
