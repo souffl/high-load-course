@@ -1,108 +1,145 @@
 package ru.quipy.apigateway
 
-import io.github.resilience4j.ratelimiter.RateLimiter
-import io.github.resilience4j.ratelimiter.RateLimiterConfig
 import jakarta.annotation.PreDestroy
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import ru.quipy.common.utils.NamedThreadFactory
+import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.payments.logic.PaymentExternalSystemAdapter
-import java.time.Duration
-import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 @Component
 class PaymentRequestQueue(
     paymentAccounts: List<PaymentExternalSystemAdapter>,
-    @param:Value("\${payment.queue.processing-budget-millis:2300}")
-    private val processingBudgetMillis: Long,
-    @param:Value("\${payment.deadline-safety-margin-millis:200}")
-    private val safetyMarginMillis: Long,
-    @param:Value("\${payment.queue.max-wait-millis:500}")
-    private val maxWaitMillis: Long,
+    @Value("\${payment.queue.max-pending:0}")
+    configuredMaxPending: Int,
+    @Value("\${payment.queue.deadline-admission-enabled:true}")
+    private val deadlineAdmissionEnabled: Boolean,
+    @Value("\${payment.queue.deadline-admission-processing-budget-millis:0}")
+    configuredAdmissionProcessingBudgetMillis: Long,
+    @Value("\${payment.deadline-safety-margin-millis:200}")
+    private val deadlineSafetyMarginMillis: Long,
 ) {
     init {
         require(paymentAccounts.isNotEmpty()) { "At least one payment account is required." }
-        require(processingBudgetMillis > 0 && safetyMarginMillis >= 0 && maxWaitMillis > 0)
         require(paymentAccounts.all { it.rateLimitPerSecond() > 0 && it.parallelism() > 0 })
+        require(configuredAdmissionProcessingBudgetMillis >= 0 && deadlineSafetyMarginMillis >= 0)
     }
 
-    private val averageProcessingMillis = paymentAccounts.sumOf { it.averageProcessingTime().toMillis() }
-    private val rateLimitPerSecond = paymentAccounts.minOf { it.rateLimitPerSecond() }
-    // Size workers using average service time; use the larger processing budget for admission.
-    private val workerCount = minOf(
-        paymentAccounts.minOf { it.parallelism() },
-        maxOf(1L, (rateLimitPerSecond.toLong() * averageProcessingMillis + 999) / 1_000).toInt()
-    )
-    private val estimatedThroughput = maxOf(
-        1L, minOf(rateLimitPerSecond.toLong(), workerCount * 1_000L / processingBudgetMillis)
-    )
-    private val queueCapacity = maxOf(1L, estimatedThroughput * maxWaitMillis / 1_000).toInt()
-    // Reserve spaced starts using the ready-made limiter, including short bursts within the wait budget.
-    private val admissionLimiter = RateLimiter.of(
-        "payment-admission",
-        RateLimiterConfig.custom()
-            .limitForPeriod(1)
-            .limitRefreshPeriod(Duration.ofNanos((TimeUnit.SECONDS.toNanos(1) + rateLimitPerSecond - 1) / rateLimitPerSecond))
-            .timeoutDuration(Duration.ofMillis(maxWaitMillis))
-            .build()
-    )
-    private val executor = ThreadPoolExecutor(
-        workerCount, workerCount, 0L, TimeUnit.MILLISECONDS,
-        ArrayBlockingQueue<Runnable>(queueCapacity),
-        NamedThreadFactory("payment-request-executor"),
-        ThreadPoolExecutor.AbortPolicy(),
-    )
+    private val accountRatePerSecond = paymentAccounts.minOf { it.rateLimitPerSecond() }
+    private val dispatchRatePerSecond = accountRatePerSecond
+    private val workerCount = paymentAccounts.minOf { it.parallelism() }
+    private val tokenCapacity = dispatchRatePerSecond
+    private val processingBudgetMillis = configuredAdmissionProcessingBudgetMillis.takeIf { it > 0 }
+        ?: paymentAccounts.minOf { it.averageProcessingTime().toMillis() }
+    private val maxPending = configuredMaxPending.takeIf { it > 0 } ?: DEFAULT_MAX_PENDING
+
+    private val logger = LoggerFactory.getLogger(PaymentRequestQueue::class.java)
+    private val accepting = AtomicBoolean(true)
+    private val pendingStarts = AtomicInteger()
+    private val waiting = LinkedBlockingQueue<PendingPayment>(maxPending)
+    private val workerSlots = Semaphore(workerCount)
+    private val executor = Executors.newFixedThreadPool(workerCount, NamedThreadFactory("payment-request-executor"))
+    private val dispatcher = Executors.newSingleThreadExecutor(NamedThreadFactory("payment-request-dispatcher"))
+    private val tokenBucket = TokenBucketRateLimiter(dispatchRatePerSecond, tokenCapacity)
 
     init {
-        LoggerFactory.getLogger(PaymentRequestQueue::class.java).info(
-            "Payment executor: workers={}, queueCapacity={}, processingBudgetMillis={}, maxWaitMillis={}",
-            workerCount, queueCapacity, processingBudgetMillis, maxWaitMillis
+        logger.info(
+            "Payment scheduler: workers={}, accountRateLimitPerSecond={}, dispatchRatePerSecond={}, tokenCapacity={}, maxPending={}, deadlineAdmissionEnabled={}, admissionProcessingBudgetMillis={}",
+            workerCount, accountRatePerSecond, dispatchRatePerSecond, tokenCapacity, maxPending,
+            deadlineAdmissionEnabled, processingBudgetMillis,
         )
+        dispatcher.execute(::dispatchLoop)
     }
 
-    fun submit(deadline: Long, action: (Long) -> Unit): Long? = synchronized(executor) {
+    fun submit(deadline: Long, action: (Long) -> Unit): Admission {
         val receivedAt = System.currentTimeMillis()
-        if (executor.isShutdown || (executor.poolSize >= workerCount && executor.queue.remainingCapacity() == 0)) {
-            return@synchronized null
-        }
-        // Executor statistics give a conservative queue-length estimate, not a deadline guarantee.
-        val tasksAhead = executor.queue.size + if (executor.activeCount >= workerCount) 1 else 0
-        val estimatedWaitMillis = (tasksAhead * 1_000L + estimatedThroughput - 1) / estimatedThroughput
-        if (estimatedWaitMillis > maxWaitMillis ||
-            estimatedWaitMillis + processingBudgetMillis + safetyMarginMillis > deadline - receivedAt
-        ) return@synchronized null
-        val remainingWaitMillis = minOf(maxWaitMillis, deadline - System.currentTimeMillis() - processingBudgetMillis - safetyMarginMillis)
-        if (remainingWaitMillis < 0) return@synchronized null
-        // All reservations and per-request timeout changes are serialized by this admission lock.
-        admissionLimiter.changeTimeoutDuration(Duration.ofMillis(remainingWaitMillis))
-        val permitWaitNanos = admissionLimiter.reservePermission()
-        if (permitWaitNanos < 0) return@synchronized null
-        val startAtNanos = System.nanoTime() + permitWaitNanos
+        if (!accepting.get()) return rejected(receivedAt, deadline)
 
-        try {
-            executor.execute {
-                val delayNanos = startAtNanos - System.nanoTime()
-                if (delayNanos > 0) TimeUnit.NANOSECONDS.sleep(delayNanos)
-                action(receivedAt)
+        while (true) {
+            val startsAhead = pendingStarts.get()
+            if (!canStartBeforeDeadline(receivedAt, deadline, startsAhead)) {
+                return rejected(receivedAt, deadline)
             }
-        } catch (_: RejectedExecutionException) {
-            return@synchronized null
+            if (pendingStarts.compareAndSet(startsAhead, startsAhead + 1)) break
         }
-        receivedAt
+
+        if (!waiting.offer(PendingPayment(receivedAt, action))) {
+            pendingStarts.decrementAndGet()
+            return rejected(receivedAt, deadline)
+        }
+        return Admission.Accepted(receivedAt)
+    }
+
+    private fun rejected(receivedAt: Long, deadline: Long): Admission.Rejected {
+            logger.info(
+                "Payment admission rejected: waiting={}, pendingStarts={}, accepting={}, deadlineInMillis={}",
+                waiting.size, pendingStarts.get(), accepting.get(), deadline - receivedAt,
+            )
+        return Admission.Rejected(receivedAt + RETRY_AFTER_MILLIS)
+    }
+
+    private fun canStartBeforeDeadline(receivedAt: Long, deadline: Long, startsAhead: Int): Boolean {
+        if (!deadlineAdmissionEnabled) return true
+        val queuedStartDelayMillis = TimeUnit.NANOSECONDS.toMillis(
+            tokenBucket.estimateDelayNanos(startsAhead + 1) + TimeUnit.MILLISECONDS.toNanos(1) - 1
+        )
+        return queuedStartDelayMillis + processingBudgetMillis + deadlineSafetyMarginMillis < deadline - receivedAt
+    }
+
+    private fun dispatchLoop() {
+        try {
+            while (!Thread.currentThread().isInterrupted) {
+                val payment = waiting.take()
+                workerSlots.acquire()
+                try {
+                    tokenBucket.acquire()
+                    pendingStarts.decrementAndGet()
+                    executor.execute {
+                        try {
+                            payment.action(payment.receivedAt)
+                        } finally {
+                            workerSlots.release()
+                        }
+                    }
+                } catch (_: RejectedExecutionException) {
+                    workerSlots.release()
+                } catch (e: InterruptedException) {
+                    workerSlots.release()
+                    throw e
+                }
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     @PreDestroy
     fun shutdown() {
+        accepting.set(false)
+        dispatcher.shutdownNow()
         executor.shutdown()
-        try {
-            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) executor.shutdownNow()
-        } catch (_: InterruptedException) {
-            executor.shutdownNow()
-            Thread.currentThread().interrupt()
-        }
+    }
+
+    sealed interface Admission {
+        data class Accepted(val receivedAt: Long) : Admission
+        data class Rejected(val retryAt: Long) : Admission
+    }
+
+    private data class PendingPayment(
+        val receivedAt: Long,
+        val action: (Long) -> Unit,
+    )
+
+    private companion object {
+        const val DEFAULT_MAX_PENDING = 10_000
+        const val RETRY_AFTER_MILLIS = 1_000L
     }
 }
