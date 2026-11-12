@@ -5,12 +5,12 @@ import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 import ru.quipy.common.utils.NamedThreadFactory
+import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.payments.logic.PaymentExternalSystemAdapter
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.Semaphore
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 @Component
@@ -36,10 +36,7 @@ class PaymentRequestQueue(
     private val workerSlots = Semaphore(workerCount)
     private val executor = Executors.newFixedThreadPool(workerCount, NamedThreadFactory("payment-request-executor"))
     private val dispatcher = Executors.newSingleThreadExecutor(NamedThreadFactory("payment-request-dispatcher"))
-
-    // Accessed only by the single dispatcher thread.
-    private var tokens = tokenCapacity.toDouble()
-    private var lastTokenRefillAtNanos = System.nanoTime()
+    private val tokenBucket = TokenBucketRateLimiter(dispatchRatePerSecond, tokenCapacity)
 
     init {
         logger.info(
@@ -64,7 +61,7 @@ class PaymentRequestQueue(
                 val payment = waiting.take()
                 workerSlots.acquire()
                 try {
-                    acquireToken()
+                    tokenBucket.acquire()
                     executor.execute {
                         try {
                             payment.action(payment.receivedAt)
@@ -82,31 +79,6 @@ class PaymentRequestQueue(
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }
-    }
-
-    private fun acquireToken() {
-        while (true) {
-            refillTokens(System.nanoTime())
-            if (tokens >= 1.0) {
-                tokens -= 1.0
-                return
-            }
-            val waitNanos = maxOf(
-                1L,
-                ((1.0 - tokens) * TimeUnit.SECONDS.toNanos(1) / dispatchRatePerSecond).toLong(),
-            )
-            TimeUnit.NANOSECONDS.sleep(waitNanos)
-        }
-    }
-
-    private fun refillTokens(nowNanos: Long) {
-        val elapsedNanos = nowNanos - lastTokenRefillAtNanos
-        if (elapsedNanos <= 0) return
-        tokens = minOf(
-            tokenCapacity.toDouble(),
-            tokens + elapsedNanos.toDouble() * dispatchRatePerSecond / TimeUnit.SECONDS.toNanos(1),
-        )
-        lastTokenRefillAtNanos = nowNanos
     }
 
     @PreDestroy
