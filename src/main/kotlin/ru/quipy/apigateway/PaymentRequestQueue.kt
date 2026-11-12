@@ -14,25 +14,21 @@ import java.util.concurrent.TimeUnit
 @Component
 class PaymentRequestQueue(
     paymentAccounts: List<PaymentExternalSystemAdapter>,
-    @param:Value("\${payment.deadline-safety-margin-millis:200}")
-    private val safetyMarginMillis: Long,
     @param:Value("\${payment.queue.retry-after-millis:1000}")
     private val retryAfterMillis: Long,
-    @param:Value("\${payment.queue.retry-prefill-millis:3000}")
-    private val retryPrefillMillis: Long,
-    @param:Value("\${payment.queue.rescue-capacity:0}")
-    private val configuredRescueCapacity: Int,
-    @param:Value("\${payment.queue.target-rate-per-second:3}")
+    @param:Value("\${payment.queue.target-rate-per-second:0}")
     private val configuredTargetRatePerSecond: Int,
+    @param:Value("\${payment.queue.burst-capacity:0}")
+    private val configuredBurstCapacity: Int,
     @param:Value("\${payment.queue.max-pending:0}")
     private val configuredMaxPending: Int,
 ) {
     init {
         require(paymentAccounts.isNotEmpty()) { "At least one payment account is required." }
         require(
-            safetyMarginMillis >= 0 && retryAfterMillis > 0 && retryPrefillMillis >= 0 &&
-                configuredTargetRatePerSecond >= 0 && configuredMaxPending >= 0 &&
-                configuredRescueCapacity >= 0
+            retryAfterMillis > 0 &&
+                configuredTargetRatePerSecond >= 0 && configuredBurstCapacity >= 0 &&
+                configuredMaxPending >= 0
         )
         require(paymentAccounts.all { it.rateLimitPerSecond() > 0 && it.parallelism() > 0 })
     }
@@ -43,85 +39,48 @@ class PaymentRequestQueue(
         ?.let { minOf(it, rateLimitPerSecond) }
         ?: rateLimitPerSecond
     private val workerCount = paymentAccounts.minOf { it.parallelism() }
-    // Deadline admission is the normal bound. This limit is only a memory fuse for
-    // malformed traffic; it must not be sized from account parallelism.
+    private val logger = LoggerFactory.getLogger(PaymentRequestQueue::class.java)
+    private val tokenCapacity = configuredBurstCapacity.takeIf { it > 0 }
+        ?.let { minOf(it, dispatchRatePerSecond) }
+        ?: dispatchRatePerSecond
     private val maxPending = configuredMaxPending.takeIf { it > 0 } ?: DEFAULT_MAX_PENDING
-    private val dispatchIntervalNanos =
-        (TimeUnit.SECONDS.toNanos(1) + dispatchRatePerSecond - 1) / dispatchRatePerSecond
-    // This is capacity the payment account has above the sustained scenario rate.
-    // It is accumulated only while there is no backlog, then spent solely to rescue
-    // a request which cannot fit its deadline on the ordinary leaky schedule.
-    private val rescueCapacity = configuredRescueCapacity
-        .takeIf { it > 0 }
-        ?.let { minOf(it, (rateLimitPerSecond - dispatchRatePerSecond).coerceAtLeast(0)) }
-        ?: (rateLimitPerSecond - dispatchRatePerSecond).coerceAtLeast(0)
 
     private val lock = Any()
     private val slots = List(workerCount) { Slot() }
-    // FIFO is a reservation queue: a later retry cannot move ahead of a payment
-    // that was already admitted and invalidate its calculated start time.
     private val waiting = ArrayDeque<PendingPayment>()
     private val executor = Executors.newFixedThreadPool(workerCount, NamedThreadFactory("payment-request-executor"))
     private val dispatcher = Executors.newSingleThreadScheduledExecutor(NamedThreadFactory("payment-request-dispatcher"))
     private var scheduledDispatch: ScheduledFuture<*>? = null
-    private var nextDispatchAtNanos = System.nanoTime()
-    private var rescueTokens = 0.0
-    private var lastRescueRefillAtNanos = System.nanoTime()
+    private var tokens = tokenCapacity.toDouble()
+    private var lastTokenRefillAtNanos = System.nanoTime()
     private var accepting = true
 
     init {
         LoggerFactory.getLogger(PaymentRequestQueue::class.java).info(
-            "Payment scheduler: workers={}, accountRateLimitPerSecond={}, dispatchRatePerSecond={}, rescueCapacity={}, maxPending={}, safetyMarginMillis={}, retryAfterMinMillis={}, retryPrefillMillis={}",
-            workerCount, rateLimitPerSecond, dispatchRatePerSecond, rescueCapacity, maxPending, safetyMarginMillis, retryAfterMillis, retryPrefillMillis
+            "Payment scheduler: workers={}, accountRateLimitPerSecond={}, dispatchRatePerSecond={}, tokenCapacity={}, maxPending={}, retryAfterMinMillis={}",
+            workerCount, rateLimitPerSecond, dispatchRatePerSecond, tokenCapacity, maxPending, retryAfterMillis
         )
     }
 
     fun submit(deadline: Long, action: (Long) -> Unit): Admission = synchronized(lock) {
         val receivedAt = System.currentTimeMillis()
-        refillRescueTokens(System.nanoTime())
-        val needsRescue = !canStartBeforeDeadline(receivedAt, deadline)
-        if (!accepting || waiting.size >= maxPending ||
-            (needsRescue && (rescueTokens < 1.0 || slots.none { it.startedAtNanos == null }))
-        ) {
-            return@synchronized Admission.Rejected(nextRetryAt(receivedAt))
+        if (!accepting || waiting.size >= maxPending) {
+            logger.info(
+                "Payment admission rejected: waiting={}, busyWorkers={}, accepting={}",
+                waiting.size, slots.count { it.startedAtNanos != null }, accepting,
+            )
+            return@synchronized Admission.Rejected(receivedAt + retryAfterMillis)
         }
 
-        waiting.addLast(PendingPayment(receivedAt, deadline, action))
-        if (needsRescue) {
-            dispatchRescue()
-        } else {
-            scheduleDispatch()
-        }
+        waiting.addLast(PendingPayment(receivedAt, action))
+        scheduleDispatch()
         Admission.Accepted(receivedAt)
-    }
-
-    /**
-     * Admission reserves a FIFO dispatch position. Provider execution time is
-     * deliberately not guessed here; the actual HTTP call keeps the absolute
-     * client deadline as its timeout.
-     */
-    private fun canStartBeforeDeadline(nowMillis: Long, deadline: Long): Boolean {
-        val nowNanos = System.nanoTime()
-        val scheduledStartNanos = maxOf(nowNanos, nextDispatchAtNanos) +
-            waiting.size.toLong() * dispatchIntervalNanos
-        val waitMillis = TimeUnit.NANOSECONDS.toMillis(scheduledStartNanos - nowNanos)
-        return waitMillis + safetyMarginMillis < deadline - nowMillis
-    }
-
-    private fun nextRetryAt(nowMillis: Long): Long {
-        val nowNanos = System.nanoTime()
-        refillRescueTokens(nowNanos)
-        val dispatchDelayMillis = TimeUnit.NANOSECONDS.toMillis(maxOf(0L, nextDispatchAtNanos - nowNanos))
-        // Bombardier applies Retry-After globally. Wake it while a small tail is
-        // still queued, otherwise a completely drained queue creates an RPS hole.
-        val backlogDelayMillis = TimeUnit.NANOSECONDS.toMillis(waiting.size.toLong() * dispatchIntervalNanos)
-        val prefilledBacklogDelayMillis = maxOf(0L, backlogDelayMillis - retryPrefillMillis)
-        return nowMillis + maxOf(retryAfterMillis, dispatchDelayMillis, prefilledBacklogDelayMillis)
     }
 
     private fun scheduleDispatch() {
         if (scheduledDispatch != null || waiting.isEmpty() || slots.none { it.startedAtNanos == null }) return
-        val delayNanos = maxOf(0L, nextDispatchAtNanos - System.nanoTime())
+        refillTokens(System.nanoTime())
+        val delayNanos = nanosUntilNextToken()
         scheduledDispatch = dispatcher.schedule({
             synchronized(lock) {
                 scheduledDispatch = null
@@ -132,24 +91,16 @@ class PaymentRequestQueue(
 
     private fun dispatchNext() {
         val slot = slots.firstOrNull { it.startedAtNanos == null } ?: return
-        val payment = waiting.pollFirst() ?: return
         val nowNanos = System.nanoTime()
-        if (nowNanos < nextDispatchAtNanos) {
-            waiting.addFirst(payment)
+        refillTokens(nowNanos)
+        if (tokens < 1.0) {
             scheduleDispatch()
             return
         }
-
-        nextDispatchAtNanos = nowNanos + dispatchIntervalNanos
-        execute(slot, payment, nowNanos)
-        scheduleDispatch()
-    }
-
-    private fun dispatchRescue() {
-        val slot = slots.firstOrNull { it.startedAtNanos == null } ?: return
         val payment = waiting.pollFirst() ?: return
-        rescueTokens -= 1.0
-        execute(slot, payment, System.nanoTime())
+
+        tokens -= 1.0
+        execute(slot, payment, nowNanos)
         scheduleDispatch()
     }
 
@@ -168,19 +119,19 @@ class PaymentRequestQueue(
         }
     }
 
-    private fun refillRescueTokens(nowNanos: Long) {
-        if (rescueCapacity == 0) return
-        if (waiting.isNotEmpty()) {
-            lastRescueRefillAtNanos = nowNanos
-            return
-        }
-        val elapsedNanos = nowNanos - lastRescueRefillAtNanos
+    private fun refillTokens(nowNanos: Long) {
+        val elapsedNanos = nowNanos - lastTokenRefillAtNanos
         if (elapsedNanos <= 0) return
-        rescueTokens = minOf(
-            rescueCapacity.toDouble(),
-            rescueTokens + elapsedNanos.toDouble() * rescueCapacity / TimeUnit.SECONDS.toNanos(1)
+        tokens = minOf(
+            tokenCapacity.toDouble(),
+            tokens + elapsedNanos.toDouble() * dispatchRatePerSecond / TimeUnit.SECONDS.toNanos(1)
         )
-        lastRescueRefillAtNanos = nowNanos
+        lastTokenRefillAtNanos = nowNanos
+    }
+
+    private fun nanosUntilNextToken(): Long {
+        if (tokens >= 1.0) return 0
+        return maxOf(1L, ((1.0 - tokens) * TimeUnit.SECONDS.toNanos(1) / dispatchRatePerSecond).toLong())
     }
 
     @PreDestroy
@@ -205,7 +156,6 @@ class PaymentRequestQueue(
 
     private data class PendingPayment(
         val receivedAt: Long,
-        val deadline: Long,
         val action: (Long) -> Unit,
     )
 
