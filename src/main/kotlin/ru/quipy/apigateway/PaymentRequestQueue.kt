@@ -36,7 +36,7 @@ class PaymentRequestQueue(
     private val accountRatePerSecond = paymentAccounts.minOf { it.rateLimitPerSecond() }
     private val dispatchRatePerSecond = accountRatePerSecond
     private val workerCount = paymentAccounts.minOf { it.parallelism() }
-    private val tokenCapacity = dispatchRatePerSecond
+    private val tokenCapacity = 1
     private val processingBudgetMillis = configuredAdmissionProcessingBudgetMillis.takeIf { it > 0 }
         ?: paymentAccounts.minOf { it.averageProcessingTime().toMillis() }
     private val maxPending = configuredMaxPending.takeIf { it > 0 } ?: DEFAULT_MAX_PENDING
@@ -84,11 +84,11 @@ class PaymentRequestQueue(
     }
 
     private fun rejected(receivedAt: Long, deadline: Long): Admission.Rejected {
-            logger.info(
-                "Payment admission rejected: waiting={}, pendingStarts={}, accepting={}, deadlineInMillis={}",
-                waiting.size, pendingStarts.get(), accepting.get(), deadline - receivedAt,
-            )
-        return Admission.Rejected(receivedAt + RETRY_AFTER_MILLIS)
+        logger.info(
+            "Payment admission rejected: waiting={}, pendingStarts={}, accepting={}, deadlineInMillis={}",
+            waiting.size, pendingStarts.get(), accepting.get(), deadline - receivedAt,
+        )
+        return Admission.Rejected
     }
 
     private fun canStartBeforeDeadline(receivedAt: Long, deadline: Long, startsAhead: Int): Boolean {
@@ -135,7 +135,7 @@ class PaymentRequestQueue(
 
     sealed interface Admission {
         data class Accepted(val receivedAt: Long) : Admission
-        data class Rejected(val retryAt: Long) : Admission
+        data object Rejected : Admission
     }
 
     private data class PendingPayment(
@@ -145,6 +145,5 @@ class PaymentRequestQueue(
 
     private companion object {
         const val DEFAULT_MAX_PENDING = 10_000
-        const val RETRY_AFTER_MILLIS = 1_000L
     }
 }

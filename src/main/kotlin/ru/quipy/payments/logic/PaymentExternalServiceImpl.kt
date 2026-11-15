@@ -21,7 +21,6 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
-    private val deadlineSafetyMarginMillis: Long = 200,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -63,7 +62,7 @@ class PaymentExternalSystemAdapterImpl(
             val call = client.newCall(request)
             // Limit actual HTTP starts: a database write after acquiring a permit can bunch requests.
             rateLimiter.tickBlocking()
-            val callBudget = deadline - now() - deadlineSafetyMarginMillis
+            val callBudget = deadline - now()
 
             if (callBudget <= 0) {
                 paymentESService.update(paymentId) {

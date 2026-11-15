@@ -29,12 +29,10 @@ class TokenBucketRateLimiter(
         }
     }
 
-    /** Estimates token availability assuming queued requests consume tokens as they arrive. */
     fun estimateDelayMillis(permitsAhead: Int): Long {
         require(permitsAhead > 0)
         val state = bucket.get()
         val missingTokens = (permitsAhead - availableTokens(state, nanoTime())).coerceAtLeast(0.0)
-        // Round up so a positive fractional millisecond never becomes a zero wait.
         return ceil(missingTokens * windowNanos / rate / TimeUnit.MILLISECONDS.toNanos(1)).toLong()
     }
 
