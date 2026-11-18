@@ -34,12 +34,6 @@ class APIController(
 
     private val rejectedAttempts = ConcurrentHashMap<UUID, RetryState>()
 
-    init {
-        require(retryAfterBaseMillis > 0 && retryAfterMaxMillis >= retryAfterBaseMillis) {
-            "Retry-After bounds must be positive and ordered"
-        }
-    }
-
     @PostMapping("/users")
     fun createUser(@RequestBody req: CreateUserRequest): User {
         return User(UUID.randomUUID(), req.name)
