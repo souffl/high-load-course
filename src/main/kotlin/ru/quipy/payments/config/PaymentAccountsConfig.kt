@@ -35,6 +35,12 @@ class PaymentAccountsConfig {
     @Value("#{'\${payment.accounts}'.split(',')}")
     lateinit var allowedAccounts: List<String>
 
+    @Value("\${payment.provider-temporary-error-retry-base-millis:100}")
+    var temporaryErrorRetryBaseMillis: Long = 100
+
+    @Value("\${payment.provider-temporary-error-retry-max-attempts:3}")
+    var temporaryErrorRetryMaxAttempts: Int = 3
+
     @Bean
     fun accountAdapters(paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>): List<PaymentExternalSystemAdapter> {
         val request = HttpRequest.newBuilder()
@@ -58,6 +64,8 @@ class PaymentAccountsConfig {
                     paymentService,
                     paymentProviderHostPort,
                     token,
+                    temporaryErrorRetryBaseMillis,
+                    temporaryErrorRetryMaxAttempts,
                 )
             }
     }
