@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.env.Environment
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.logic.*
@@ -14,6 +15,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Duration
 import java.util.*
 
 
@@ -46,6 +48,7 @@ class PaymentAccountsConfig {
     fun accountAdapters(
         paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
         meterRegistry: MeterRegistry,
+        environment: Environment,
         @Value("\${payment.provider-connect-timeout-millis:250}") connectTimeoutMillis: Long,
         @Value("\${payment.provider-write-timeout-millis:250}") writeTimeoutMillis: Long,
         @Value("\${payment.provider-read-timeout-millis:10000}") readTimeoutMillis: Long,
@@ -66,17 +69,20 @@ class PaymentAccountsConfig {
             .map { it.copy(enabled = true) }
             .onEach(::println)
             .map {
+                val accountSettings = "payment.provider.accounts.${it.accountName}"
                 PaymentExternalSystemAdapterImpl(
                     it,
                     paymentService,
                     paymentProviderHostPort,
                     token,
                     temporaryErrorRetryBaseMillis,
-                    temporaryErrorRetryMaxAttempts,
+                    environment.getProperty("$accountSettings.max-attempts", Int::class.java, temporaryErrorRetryMaxAttempts),
                     meterRegistry,
                     connectTimeoutMillis,
                     writeTimeoutMillis,
                     readTimeoutMillis,
+                    environment.getProperty("$accountSettings.attempt-timeout-millis", Long::class.java, 0L)
+                        .takeIf { value -> value > 0 }?.let(Duration::ofMillis),
                 )
             }
     }

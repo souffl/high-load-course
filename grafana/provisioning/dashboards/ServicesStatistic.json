@@ -235,7 +235,7 @@
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
-      "description": "Повтор — запущенная вторая или последующая попытка магазина на том же платёжном аккаунте. HTTP-таймаут относится к отдельному вызову провайдера, CLIENT_TIMEOUT — к сценарию Bombardier целиком.",
+      "description": "Повтор — вторая или последующая попытка магазина. Для транспортных таймаутов attempt — итог по HTTP-вызовам, connect/write/read — активная фаза в момент ошибки. Ответ HTTP 408 провайдера и CLIENT_TIMEOUT всего сценария Bombardier показаны отдельно.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -293,8 +293,8 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "sum by (job, account, service) (increase(payment_provider_duration_seconds_count{job=~\"online-(store|shop)-job\",service=~\"$service\",phase=\"attempt\",outcome=\"timeout\"}[1m]))",
-          "legendFormat": "HTTP-таймауты · {{account}} · {{job}}",
+          "expr": "sum by (job, account, service, phase) (increase(payment_provider_duration_seconds_count{job=~\"online-(store|shop)-job\",service=~\"$service\",phase=~\"connect|write|read|attempt\",outcome=\"timeout\"}[1m]))",
+          "legendFormat": "Транспортный таймаут · {{phase}} · {{account}} · {{job}}",
           "range": true,
           "refId": "B"
         },
@@ -308,6 +308,14 @@
           "legendFormat": "CLIENT_TIMEOUT · {{service}}",
           "range": true,
           "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "editorMode": "code",
+          "expr": "sum by (job, account, service) (increase(payment_provider_duration_seconds_count{job=~\"online-(store|shop)-job\",service=~\"$service\",phase=\"attempt\",outcome=\"provider_timeout\"}[1m]))",
+          "legendFormat": "HTTP 408 провайдера · {{account}} · {{job}}",
+          "range": true,
+          "refId": "D"
         }
       ],
       "title": "Повторы и таймауты оплат за минуту",
@@ -318,7 +326,7 @@
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
-      "description": "p95/p99 завершившихся HTTP-вызовов за скользящие 2 минуты, включая чтение тела ответа. Таймауты отображаются на соседней панели.",
+      "description": "p95/p99 по завершившимся фазам connect, write, read и всему HTTP-вызову за скользящие 2 минуты. Пунктир показывает сетевые лимиты OkHttp. Для явных HTTP 408 и остальных таймаутов см. соседнюю панель.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -330,12 +338,18 @@
             "showPoints": "never",
             "drawStyle": "line",
             "scaleDistribution": {
-              "type": "linear"
+              "type": "log",
+              "log": 10
             }
           },
           "unit": "s"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "^Лимит " },
+            "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [8, 4] } }]
+          }
+        ]
       },
       "gridPos": {
         "h": 9,
@@ -364,8 +378,8 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, job, account, service) (rate(payment_provider_duration_seconds_bucket{job=~\"online-(store|shop)-job\",service=~\"$service\",phase=\"attempt\",outcome=\"completed\"}[2m])))",
-          "legendFormat": "p95 · {{account}} · {{job}}",
+          "expr": "histogram_quantile(0.95, sum by (le, job, phase, account, service) (rate(payment_provider_duration_seconds_bucket{job=~\"online-(store|shop)-job\",service=~\"$service\",outcome=\"completed\"}[2m])))",
+          "legendFormat": "p95 {{phase}} · {{account}} · {{job}}",
           "range": true,
           "refId": "A"
         },
@@ -375,13 +389,21 @@
             "uid": "PBFA97CFB590B2093"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, job, account, service) (rate(payment_provider_duration_seconds_bucket{job=~\"online-(store|shop)-job\",service=~\"$service\",phase=\"attempt\",outcome=\"completed\"}[2m])))",
-          "legendFormat": "p99 · {{account}} · {{job}}",
+          "expr": "histogram_quantile(0.99, sum by (le, job, phase, account, service) (rate(payment_provider_duration_seconds_bucket{job=~\"online-(store|shop)-job\",service=~\"$service\",outcome=\"completed\"}[2m])))",
+          "legendFormat": "p99 {{phase}} · {{account}} · {{job}}",
           "range": true,
           "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "editorMode": "code",
+          "expr": "max by (job, phase, account, service) (payment_provider_timeout_limit_seconds{job=~\"online-(store|shop)-job\",service=~\"$service\"}) > 0",
+          "legendFormat": "Лимит {{phase}} · {{account}} · {{job}}",
+          "range": true,
+          "refId": "C"
         }
       ],
-      "title": "Длительность HTTP-вызова к провайдеру",
+      "title": "Длительность фаз HTTP к провайдеру",
       "type": "timeseries"
     },
     {
