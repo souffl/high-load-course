@@ -2,6 +2,9 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Tags
+import io.micrometer.core.instrument.Timer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -9,7 +12,9 @@ import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.TimeUnit
@@ -23,6 +28,10 @@ class PaymentExternalSystemAdapterImpl(
     private val token: String,
     private val temporaryErrorRetryBaseMillis: Long,
     private val temporaryErrorRetryMaxAttempts: Int,
+    private val meterRegistry: MeterRegistry,
+    connectTimeoutMillis: Long,
+    writeTimeoutMillis: Long,
+    readTimeoutMillis: Long,
 ) : PaymentExternalSystemAdapter {
     companion object {
         val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
@@ -41,7 +50,22 @@ class PaymentExternalSystemAdapterImpl(
         rate = rateLimitPerSec.toLong(),
         window = Duration.ofSeconds(1),
     )
-    private val client = OkHttpClient.Builder().build()
+    private val metricTags = Tags.of("service", serviceName, "account", accountName)
+    private val retries = meterRegistry.counter("payment.provider.retries", metricTags)
+    private val callTimers = listOf("completed", "timeout", "io_error").associateWith { outcome ->
+        Timer.builder("payment.provider.duration")
+            .tags(metricTags)
+            .tags("phase", "attempt", "outcome", outcome)
+            .publishPercentileHistogram()
+            .minimumExpectedValue(Duration.ofNanos(100_000))
+            .maximumExpectedValue(Duration.ofSeconds(15))
+            .register(meterRegistry)
+    }
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(connectTimeoutMillis, TimeUnit.MILLISECONDS)
+        .writeTimeout(writeTimeoutMillis, TimeUnit.MILLISECONDS)
+        .readTimeout(readTimeoutMillis, TimeUnit.MILLISECONDS)
+        .build()
 
     override fun performPaymentAsync(
         paymentId: UUID,
@@ -76,24 +100,23 @@ class PaymentExternalSystemAdapterImpl(
                     return
                 }
 
-                val body = client.newCall(request).run {
-                    timeout().timeout(callBudget, TimeUnit.MILLISECONDS)
-                    execute().use { response ->
-                        try {
-                            mapper.readValue(
-                                response.body?.string(),
-                                ExternalSysResponse::class.java
-                            )
-                        } catch (e: Exception) {
-                            logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
-                            ExternalSysResponse(
-                                transactionId.toString(),
-                                paymentId.toString(),
-                                false,
-                                e.message
-                            )
-                        }
-                    }
+                val call = client.newCall(request)
+                call.timeout().timeout(callBudget, TimeUnit.MILLISECONDS)
+                if (attempt > 1) retries.increment()
+                val sample = Timer.start(meterRegistry)
+                val (responseCode, responseBody) = try {
+                    call.execute().use { response -> response.code to response.body?.string() }
+                        .also { sample.stop(callTimers.getValue("completed")) }
+                } catch (e: IOException) {
+                    val timedOut = e is SocketTimeoutException || (e is InterruptedIOException && e.message == "timeout")
+                    sample.stop(callTimers.getValue(if (timedOut) "timeout" else "io_error"))
+                    throw e
+                }
+                val body = try {
+                    mapper.readValue(responseBody, ExternalSysResponse::class.java)
+                } catch (e: Exception) {
+                    logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: $responseCode, reason: ${e.message}")
+                    ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
                 }
 
                 if (body.result || !isTemporaryError(body.message) || attempt >= temporaryErrorRetryMaxAttempts) {

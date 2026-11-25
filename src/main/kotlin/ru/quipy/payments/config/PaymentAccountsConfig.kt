@@ -3,6 +3,7 @@ package ru.quipy.payments.config
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -42,7 +43,13 @@ class PaymentAccountsConfig {
     var temporaryErrorRetryMaxAttempts: Int = 3
 
     @Bean
-    fun accountAdapters(paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>): List<PaymentExternalSystemAdapter> {
+    fun accountAdapters(
+        paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
+        meterRegistry: MeterRegistry,
+        @Value("\${payment.provider-connect-timeout-millis:250}") connectTimeoutMillis: Long,
+        @Value("\${payment.provider-write-timeout-millis:250}") writeTimeoutMillis: Long,
+        @Value("\${payment.provider-read-timeout-millis:10000}") readTimeoutMillis: Long,
+    ): List<PaymentExternalSystemAdapter> {
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -66,6 +73,10 @@ class PaymentAccountsConfig {
                     token,
                     temporaryErrorRetryBaseMillis,
                     temporaryErrorRetryMaxAttempts,
+                    meterRegistry,
+                    connectTimeoutMillis,
+                    writeTimeoutMillis,
+                    readTimeoutMillis,
                 )
             }
     }

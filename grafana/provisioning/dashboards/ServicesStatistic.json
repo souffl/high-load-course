@@ -231,12 +231,166 @@
       "description": "Попытки оплаты, отклонённые магазином до обращения к платёжному провайдеру. Bombardier повторяет подачу таких кейсов; отказы не означают неуспешную оплату."
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "Повтор — запущенная вторая или последующая попытка магазина на том же платёжном аккаунте. HTTP-таймаут относится к отдельному вызову провайдера, CLIENT_TIMEOUT — к сценарию Bombardier целиком.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "событий за минуту",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "drawStyle": "line",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          },
+          "min": 0,
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 103,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, account, service) (increase(payment_provider_retries_total{job=~\"online-(store|shop)-job\",service=~\"$service\"}[1m]))",
+          "legendFormat": "Повторы · {{account}} · {{job}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum by (job, account, service) (increase(payment_provider_duration_seconds_count{job=~\"online-(store|shop)-job\",service=~\"$service\",phase=\"attempt\",outcome=\"timeout\"}[1m]))",
+          "legendFormat": "HTTP-таймауты · {{account}} · {{job}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service) (increase(payment_finished_total{job=\"bombardier-docker-network-job\",service=~\"$service\",failReason=\"CLIENT_TIMEOUT\"}[1m]))",
+          "legendFormat": "CLIENT_TIMEOUT · {{service}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Повторы и таймауты оплат за минуту",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "description": "p95/p99 завершившихся HTTP-вызовов за скользящие 2 минуты, включая чтение тела ответа. Таймауты отображаются на соседней панели.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "длительность",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "drawStyle": "line",
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 104,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.4.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, job, account, service) (rate(payment_provider_duration_seconds_bucket{job=~\"online-(store|shop)-job\",service=~\"$service\",phase=\"attempt\",outcome=\"completed\"}[2m])))",
+          "legendFormat": "p95 · {{account}} · {{job}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, job, account, service) (rate(payment_provider_duration_seconds_bucket{job=~\"online-(store|shop)-job\",service=~\"$service\",phase=\"attempt\",outcome=\"completed\"}[2m])))",
+          "legendFormat": "p99 · {{account}} · {{job}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Длительность HTTP-вызова к провайдеру",
+      "type": "timeseries"
+    },
+    {
       "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 17
       },
       "id": 27,
       "panels": [
@@ -841,7 +995,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 9
+        "y": 18
       },
       "id": 10,
       "panels": [
@@ -1187,7 +1341,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 10
+        "y": 19
       },
       "id": 12,
       "panels": [
@@ -1580,7 +1734,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 11
+        "y": 20
       },
       "id": 17,
       "panels": [
@@ -2305,7 +2459,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 21
       },
       "id": 21,
       "panels": [
@@ -2613,7 +2767,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 13
+        "y": 22
       },
       "id": 38,
       "panels": [
@@ -3118,7 +3272,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 23
       },
       "id": 97,
       "panels": [
